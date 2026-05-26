@@ -1,0 +1,9 @@
+{
+  "name": "hermes-mastery-validator",
+  "version": "0.1.0-alpha.0",
+  "private": true,
+  "engines": { "node": ">=20" },
+  "dependencies": {
+    "js-yaml": "^4.1.0"
+  }
+}
