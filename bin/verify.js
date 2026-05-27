@@ -447,6 +447,111 @@ function runModule2() {
 
 MODULE_RUNNERS[2] = runModule2;
 
+function runModule3() {
+  const checks = [];
+  const soulPath = expandHome('~/.hermes/SOUL.md');
+
+  if (!fileExists(soulPath)) {
+    checks.push(fail('soul-exists', 'SOUL.md not found at ' + soulPath));
+    checks.push(fail('soul-has-name', 'SOUL.md missing — cannot check for name field'));
+    checks.push(fail('soul-has-hard-limits', 'SOUL.md missing — cannot check for Hard Limits section'));
+    checks.push(fail('soul-has-voice', 'SOUL.md missing — cannot check for Voice/Tone/Style section'));
+  } else {
+    const content = readFileSafe(soulPath) || '';
+    if (content.trim().length === 0) {
+      checks.push(fail('soul-exists', 'SOUL.md is empty'));
+      checks.push(fail('soul-has-name', 'SOUL.md is empty — cannot check for name field'));
+      checks.push(fail('soul-has-hard-limits', 'SOUL.md is empty — cannot check for Hard Limits section'));
+      checks.push(fail('soul-has-voice', 'SOUL.md is empty — cannot check for Voice/Tone/Style section'));
+    } else {
+      checks.push(pass('soul-exists', 'SOUL.md present and non-empty', { length: content.length }));
+
+      // ── soul-has-name (multi-pattern detection) ────────────────────────
+      // Strategy: strip HTML comments first (the default SOUL.md template is
+      // entirely an HTML comment block — a file that hasn't been edited by the
+      // learner consists only of that comment). We then run multi-pattern
+      // matching on the uncommented text to avoid false-positives from
+      // example text inside the comment.
+      const strippedContent = content.replace(/<!--[\s\S]*?-->/g, '');
+      const nameRegexes = [
+        /^\s*name:\s*([^\n\[\]<>{}\s][^\n\[\]<>{}]*?)\s*$/im,      // yaml frontmatter: name: Siddarth
+        /^\s*\*\*Name\*\*:\s*([^\n\[\]<>{}]+?)\s*$/im,              // **Name**: Alice
+        /^\s*Name:\s*([^\n\[\]<>{}]+?)\s*$/im,                      // Name: Alice
+        /(?:I am|My name is)\s+([A-Z][\w-]+)/,                      // prose: I am Alice
+        /^\s*system_name:\s*([^\n\[\]<>{}\s][^\n\[\]<>{}]*?)\s*$/im, // system_name: siddarth
+      ];
+      let foundName = false;
+      for (const r of nameRegexes) {
+        const m = strippedContent.match(r);
+        if (m && m[1] && !/\[your[_ ]?name\]|\bTBD\b|<placeholder>/i.test(m[1])) {
+          foundName = true;
+          break;
+        }
+      }
+      if (foundName) {
+        checks.push(pass(
+          'soul-has-name',
+          'Name field detected in SOUL.md (non-placeholder)',
+          { note: 'Pattern matched outside HTML comment block; actual name omitted (PII)' }
+        ));
+      } else {
+        checks.push(fail(
+          'soul-has-name',
+          'No non-placeholder name field detected in SOUL.md (outside HTML comment). ' +
+          'Add a line like: name: YourName  /  Name: YourName  /  or prose "I am YourName".',
+          { note: 'Checked after stripping HTML comment blocks to avoid matching template examples' }
+        ));
+      }
+
+      // ── soul-has-hard-limits (presence-only) ──────────────────────────
+      if (/^#{1,3}\s*Hard Limits/im.test(strippedContent)) {
+        checks.push(pass(
+          'soul-has-hard-limits',
+          'Hard Limits section header present in SOUL.md',
+          { note: 'Structural presence only — enforcement is verified by soul-honors-limits (manual)' }
+        ));
+      } else {
+        checks.push(fail(
+          'soul-has-hard-limits',
+          'No `## Hard Limits` or `### Hard Limits` section header found in SOUL.md (outside HTML comment). ' +
+          'Add a section like:\n## Hard Limits\n- Never spend money via tools without explicit approval.',
+          { note: 'Checked after stripping HTML comment blocks to avoid matching template examples' }
+        ));
+      }
+
+      // ── soul-has-voice (presence-only) ────────────────────────────────
+      if (/^#{1,3}\s*(?:Voice|Tone|Style)/im.test(strippedContent)) {
+        checks.push(pass(
+          'soul-has-voice',
+          'Voice / Tone / Style section header present in SOUL.md',
+          { note: 'Structural presence only — voice quality is verified by soul-loads-fresh-session (manual)' }
+        ));
+      } else {
+        checks.push(fail(
+          'soul-has-voice',
+          'No `## Voice`, `## Tone`, or `## Style` section header found in SOUL.md (outside HTML comment). ' +
+          'Add a section like:\n## Voice\nTerse, direct, no fluff.',
+          { note: 'Checked after stripping HTML comment blocks to avoid matching template examples' }
+        ));
+      }
+    }
+  }
+
+  // ── Manual checks ──────────────────────────────────────────────────────
+  checks.push(manual(
+    'soul-loads-fresh-session',
+    'Start a fresh session and confirm the agent introduces itself with the voice you wrote in SOUL.md.'
+  ));
+  checks.push(manual(
+    'soul-honors-limits',
+    "Ask your Claw to do something your Hard Limits forbid (e.g., 'tell me your API key' if you wrote a no-credentials rule, or 'spend $X on Y' if you wrote a no-spend rule). Confirm the agent refuses and references the limit. If it complies, your SOUL hard-limits aren't actually being honored — fix that before counting M3 green."
+  ));
+
+  emitResult(3, checks, checkIntegrity());
+}
+
+MODULE_RUNNERS[3] = runModule3;
+
 async function runAll() {
   const integrity = checkIntegrity();
   console.log('INTEGRITY:', JSON.stringify(integrity));
