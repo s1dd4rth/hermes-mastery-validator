@@ -273,15 +273,80 @@ function emitResult(module, checks, integrity) {
 //   MODULE_RUNNERS[N] = async function runModuleN() { ... }
 const MODULE_RUNNERS = {};
 
+async function runModule1() {
+  const checks = [];
+
+  // Check 1: hermes-installed
+  try {
+    const r = runCmd('hermes', ['--version']);
+    if (r.status === 0 && r.stdout.trim()) {
+      checks.push(pass('hermes-installed', { version: r.stdout.trim().split('\n')[0] }));
+    } else {
+      checks.push(fail('hermes-installed', '`hermes --version` exited non-zero or empty'));
+    }
+  } catch (e) {
+    checks.push(fail('hermes-installed', '`hermes --version` failed: ' + e.message));
+  }
+
+  // Check 2: gateway-running
+  // Phase 0 probe (2026-05-23) found no Hermes gateway process listening on
+  // any port. Port 1919 (spec assumption) did not respond. Config has a
+  // `dashboard:` section but no port key — only `server_actions: ''`.
+  // The check detects the live state honestly: PASS if any HTTP response is
+  // received, FAIL if the port is not reachable.
+  const dashboardPort = 1919;
+  const url = `http://127.0.0.1:${dashboardPort}`;
+  try {
+    const res = await httpProbe(url);
+    if (res && res.status > 0 && res.status < 500) {
+      checks.push(pass('gateway-running', { url, status: res.status }));
+    } else {
+      checks.push(fail('gateway-running', `Dashboard not reachable at ${url}`, { res }));
+    }
+  } catch (err) {
+    checks.push(fail('gateway-running', `Dashboard probe failed: ${err.message}`));
+  }
+
+  // Check 3: model-configured (via readYamlValue per spec §7.1 v4)
+  // Phase 0 probe confirmed model.provider = "gemini" in ~/.hermes/config.yaml.
+  // `hermes config get` does not exist in v0.12.0; js-yaml direct parse is the
+  // only supported read method.
+  const provider = readYamlValue('~/.hermes/config.yaml', 'model.provider');
+  if (provider && typeof provider === 'string' && provider.length > 0) {
+    checks.push(pass('model-configured', { key: 'model.provider', provider }));
+  } else {
+    checks.push(fail('model-configured', 'Config key model.provider is missing or empty in ~/.hermes/config.yaml'));
+  }
+
+  // Check 4: validator-skill-installed (canonical slug per spec §4)
+  // Phase 0 probe confirmed install target: ~/.hermes/skills/hermes-mastery-validator/
+  // Dev workflow: ln -sfn $(pwd) ~/.hermes/skills/hermes-mastery-validator
+  // Learner workflow: hermes skills install s1dd4rth/hermes-mastery-validator
+  const skillPath = expandHome('~/.hermes/skills/hermes-mastery-validator/SKILL.md');
+  if (fileExists(skillPath)) {
+    checks.push(pass('validator-skill-installed', { path: skillPath }));
+  } else {
+    checks.push(fail(
+      'validator-skill-installed',
+      `Validator skill not installed at ${skillPath}. For dev: symlink via \`ln -sfn $(pwd) ~/.hermes/skills/hermes-mastery-validator\`. For learners: \`hermes skills install s1dd4rth/hermes-mastery-validator\`.`,
+      { expected_path: skillPath }
+    ));
+  }
+
+  emitResult(1, checks, checkIntegrity());
+}
+
+MODULE_RUNNERS[1] = runModule1;
+
 function runAll() {
   const integrity = checkIntegrity();
   console.log('INTEGRITY:', JSON.stringify(integrity));
   // Phase 4 Task 4.2 will expand this to iterate MODULE_RUNNERS for per-module summary.
 }
 
-function main() {
+async function main() {
   const arg = process.argv[2];
-  if (arg === 'all') return runAll();
+  if (arg === 'all') { runAll(); return; }
   const n = parseInt(arg, 10);
   if (!Number.isFinite(n) || n < 1 || n > 10) {
     console.error('Usage: verify.js <1..10> | all');
@@ -292,7 +357,7 @@ function main() {
     console.error(`No runner defined for module ${n}`);
     process.exit(2);
   }
-  runner();
+  await runner();
 }
 
 main();
