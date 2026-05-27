@@ -274,7 +274,9 @@ function emitResult(module, checks, integrity) {
 const MODULE_RUNNERS = {};
 
 function runAll() {
-  console.error('runAll() will be implemented in Task 4.2');
+  const integrity = checkIntegrity();
+  console.log('INTEGRITY:', JSON.stringify(integrity));
+  // Phase 4 Task 4.2 will expand this to iterate MODULE_RUNNERS for per-module summary.
 }
 
 function main() {
