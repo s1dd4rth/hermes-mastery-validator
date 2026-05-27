@@ -14,11 +14,13 @@
 
 const { execFileSync } = require('node:child_process');
 const { createHash } = require('node:crypto');
+const fs = require('node:fs');
 const {
   readFileSync, writeFileSync, statSync, lstatSync,
   existsSync, realpathSync, mkdirSync,
 } = require('node:fs');
 const { homedir, platform: osPlatform } = require('node:os');
+const path = require('node:path');
 const { dirname, join } = require('node:path');
 const yaml = require('js-yaml');
 
@@ -26,6 +28,13 @@ const REPO_ROOT = join(__dirname, '..');
 
 const PLATFORM = osPlatform() === 'darwin' ? 'macos' : 'linux';
 const SCHEMA_VERSION = 1;
+
+let VALIDATOR_VERSION = 'unknown';
+try {
+  VALIDATOR_VERSION = fs
+    .readFileSync(path.join(__dirname, '..', 'VERSION'), 'utf8')
+    .trim();
+} catch {}
 
 // ── Helpers ──────────────────────────────────────────────────────────────
 
@@ -192,61 +201,59 @@ function manual(id, detail) {
 // ── Integrity self-check ──────────────────────────────────────────────────
 
 /**
- * Tamper-evidence. A clean install of this skill is a pristine `git clone`
- * + `git pull` — every tracked file matches HEAD. The attack this defends
- * against: an agent with write access editing bin/verify.js to FAKE check
- * results ("make module N pass"). If any tracked source differs from HEAD,
- * a `pass` cannot be trusted — the verifier itself was modified. We can't
- * tamper-PROOF (a determined agent could delete this check too) but we can
- * make casual fakery self-revealing in the JSON the user/web app receives.
- * Never throws.
+ * Tamper-evidence via MANIFEST.sha256 (spec §7.2 v4). Installed skills ship
+ * a pre-computed manifest; this function rehashes each listed file and detects
+ * drift. The attack defended against: an agent with write access editing
+ * bin/verify.js to fake check results. We can't tamper-PROOF (a determined
+ * agent could edit this check too) but we make casual fakery self-revealing in
+ * the JSON the user/web app receives. Never throws.
  *
  * Returns { source, status, modified_files?, note? }:
  *   source: 'local-manifest' | 'none'
  *   status: 'DRIFT_OK' | 'DRIFT_MODIFIED' | 'UNKNOWN'
  */
 function checkIntegrity() {
-  try {
-    const r = runCmd('git', ['-C', REPO_ROOT, 'diff', '--name-only', 'HEAD']);
-    if (r.status !== 0) {
-      return {
-        source: 'none',
-        status: 'UNKNOWN',
-        modified_files: [],
-        note: 'Could not verify validator source against git (skill is not a git checkout, or git is unavailable). Results cannot be integrity-checked — treat with caution.',
-      };
-    }
-    const files = r.stdout.split('\n').map(s => s.trim()).filter(Boolean);
-    if (files.length === 0) {
-      return { source: 'local-manifest', status: 'DRIFT_OK', modified_files: [], note: null };
-    }
-    return {
-      source: 'local-manifest',
-      status: 'DRIFT_MODIFIED',
-      modified_files: files,
-      note: 'VALIDATOR SOURCE WAS MODIFIED vs git HEAD. A check reporting "pass" CANNOT be trusted while the validator itself is edited — this is exactly how a faked verification looks. Inspect with `git -C <skill-dir> diff`, restore the honest validator with `git -C <skill-dir> checkout -- .`, then re-run.',
-    };
-  } catch {
+  const crypto = require('node:crypto');
+  const manifestPath = path.join(REPO_ROOT, 'MANIFEST.sha256');
+
+  if (!fs.existsSync(manifestPath)) {
     return {
       source: 'none',
       status: 'UNKNOWN',
-      modified_files: [],
-      note: 'Integrity self-check errored; results cannot be integrity-verified — treat with caution.',
+      note: 'MANIFEST.sha256 not found — install the skill via `hermes skills install s1dd4rth/hermes-mastery-validator` to enable drift-evidence.',
     };
   }
+
+  const lines = fs.readFileSync(manifestPath, 'utf8').trim().split('\n');
+  const modified = [];
+  for (const line of lines) {
+    const m = line.match(/^([a-f0-9]{64})\s+(.+)$/);
+    if (!m) continue;
+    const [, expected, relPath] = m;
+    const filePath = path.join(REPO_ROOT, relPath);
+    if (!fs.existsSync(filePath)) {
+      modified.push(`${relPath} (missing)`);
+      continue;
+    }
+    const actual = crypto.createHash('sha256').update(fs.readFileSync(filePath)).digest('hex');
+    if (actual !== expected) modified.push(relPath);
+  }
+
+  if (modified.length === 0) {
+    return { source: 'local-manifest', status: 'DRIFT_OK' };
+  }
+  return { source: 'local-manifest', status: 'DRIFT_MODIFIED', modified_files: modified };
 }
 
 // ── Schema envelope emitter ───────────────────────────────────────────────
 
 function emitResult(module, checks, integrity) {
-  const fs = require('fs');
-  const path = require('path');
   const result = {
     tool: 'hermes-mastery.verify_module',
     schema_version: 1,
     module,
     checked_at: new Date().toISOString(),
-    validator_version: fs.readFileSync(path.join(__dirname, '..', 'VERSION'), 'utf8').trim(),
+    validator_version: VALIDATOR_VERSION,
     platform: 'hermes',
     checks,
     integrity,
@@ -260,7 +267,11 @@ function emitResult(module, checks, integrity) {
 
 // ── Module runners ────────────────────────────────────────────────────────
 
-const MODULE_RUNNERS = {}; // Populated by per-module tasks
+// MODULE_RUNNERS is populated by per-module tasks. Each runner is a function
+// that takes no args, builds a `checks` array, and calls
+// `emitResult(N, checks, checkIntegrity())`. Registration pattern:
+//   MODULE_RUNNERS[N] = async function runModuleN() { ... }
+const MODULE_RUNNERS = {};
 
 function runAll() {
   console.error('runAll() will be implemented in Task 4.2');
