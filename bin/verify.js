@@ -338,6 +338,115 @@ async function runModule1() {
 
 MODULE_RUNNERS[1] = runModule1;
 
+function runModule2() {
+  const checks = [];
+
+  // ── user-md-exists ─────────────────────────────────────────────────────
+  // Checks: file present, non-empty, has a real name/identity field.
+  // NOTE: these are formatting checks, not memory-loop checks. A learner
+  // could hand-write placeholder-shaped content and pass. The conversational
+  // round-trip in the manual is what proves the memory pillar works.
+  const userPath = expandHome('~/.hermes/memories/USER.md');
+  if (!fileExists(userPath)) {
+    checks.push(fail('user-md-exists', 'USER.md not found at ' + userPath));
+  } else {
+    const content = readFileSafe(userPath) || '';
+    if (content.trim().length === 0) {
+      checks.push(fail('user-md-exists', 'USER.md is empty'));
+    } else {
+      // Accept multiple real-world identity field formats:
+      //   "Name: Alice"  /  "**Name**: Alice"  (structured YAML-ish)
+      //   "System username is alice"  /  "username is alice"  (Hermes-generated header)
+      //   "I am Alice" / "My name is Alice"  (prose)
+      const hasName =
+        /^\s*(?:\*\*)?Name(?:\*\*)?:\s*\S+/m.test(content) ||
+        /^name:\s*\S+/mi.test(content) ||
+        /(?:System\s+)?username\s+is\s+\S+/i.test(content) ||
+        /(?:I am|My name is)\s+[A-Z]\w+/.test(content);
+      const isPlaceholder = /\[your[_ ]?name\]|\bTBD\b|<placeholder>/i.test(content);
+      if (!hasName || isPlaceholder) {
+        checks.push(fail(
+          'user-md-exists',
+          'USER.md present but no real identity/name field detected (or placeholder found). ' +
+          'Accepted patterns: "Name: Alice", "username is alice", "I am Alice", "My name is Alice".'
+        ));
+      } else {
+        const overLimit = content.length > 1375;
+        checks.push(pass(
+          'user-md-exists',
+          'USER.md present with real identity field',
+          {
+            length: content.length,
+            char_limit_warning: overLimit
+              ? 'over 1375 (informational only — Hermes docs limit may shift)'
+              : 'within docs limit',
+          }
+        ));
+      }
+    }
+  }
+
+  // ── memory-md-exists ───────────────────────────────────────────────────
+  // Checks: file present, non-empty, contains at least one project/context entry.
+  // "Project/context entry" is interpreted broadly per spec: a bullet item OR
+  // prose mentioning tools in use ("uses `X`"), active work ("working on"),
+  // explicit project markers ("project:"), installed tools ("installed at"),
+  // or named workflow tools (backtick-quoted identifiers).
+  // Rationale for breadth: Hermes writes natural sentences, not just bullets.
+  const memPath = expandHome('~/.hermes/memories/MEMORY.md');
+  if (!fileExists(memPath)) {
+    checks.push(fail('memory-md-exists', 'MEMORY.md not found at ' + memPath));
+  } else {
+    const content = readFileSafe(memPath) || '';
+    if (content.trim().length === 0) {
+      checks.push(fail('memory-md-exists', 'MEMORY.md is empty'));
+    } else {
+      // Match bullet entries OR common Hermes prose patterns for tool/project context.
+      const hasEntry =
+        /^[-*]\s+\S+/m.test(content) ||             // bullet item
+        /working on/i.test(content) ||               // "working on X"
+        /project:/i.test(content) ||                 // "project: X"
+        /uses\s+`\S+`/i.test(content) ||             // "uses `toolname`" — Hermes standard
+        /installed at\s+\S+/i.test(content) ||       // "installed at /path"
+        /`[a-z][a-z0-9_-]{1,}[a-z0-9]`/.test(content); // backtick-quoted identifier (tool names)
+      if (!hasEntry) {
+        checks.push(fail(
+          'memory-md-exists',
+          'MEMORY.md present but no project/context entry detected. ' +
+          'Expected a bullet item, "working on X", "project: X", a tool reference like "uses `toolname`", ' +
+          '"installed at /path", or a backtick-quoted identifier.'
+        ));
+      } else {
+        const overLimit = content.length > 2200;
+        checks.push(pass(
+          'memory-md-exists',
+          'MEMORY.md present with project/context entry',
+          {
+            length: content.length,
+            char_limit_warning: overLimit
+              ? 'over 2200 (informational only — Hermes docs limit may shift)'
+              : 'within docs limit',
+          }
+        ));
+      }
+    }
+  }
+
+  // ── memory-conversational (manual) ────────────────────────────────────
+  // This is the load-bearing M2 check. The deterministic checks above only
+  // confirm files exist with the right shape — a learner could hand-write
+  // placeholder content and pass. The conversational round-trip below is what
+  // proves Hermes's memory pillar actually works.
+  checks.push(manual(
+    'memory-conversational',
+    'Tell your Claw a new fact about yourself in chat (e.g., "remember that I prefer terse responses" or "chuck that in memory: I drink oat milk"). Then read USER.md or MEMORY.md and confirm the agent wrote it. This is the load-bearing check for M2; the file-presence checks above just confirm the surface exists.'
+  ));
+
+  emitResult(2, checks, checkIntegrity());
+}
+
+MODULE_RUNNERS[2] = runModule2;
+
 async function runAll() {
   const integrity = checkIntegrity();
   console.log('INTEGRITY:', JSON.stringify(integrity));
