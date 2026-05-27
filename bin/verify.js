@@ -338,15 +338,15 @@ async function runModule1() {
 
 MODULE_RUNNERS[1] = runModule1;
 
-function runAll() {
+async function runAll() {
   const integrity = checkIntegrity();
   console.log('INTEGRITY:', JSON.stringify(integrity));
-  // Phase 4 Task 4.2 will expand this to iterate MODULE_RUNNERS for per-module summary.
+  // Phase 4 Task 4.2 will iterate MODULE_RUNNERS and await each — kept async-ready now.
 }
 
 async function main() {
   const arg = process.argv[2];
-  if (arg === 'all') { runAll(); return; }
+  if (arg === 'all') { await runAll(); return; }
   const n = parseInt(arg, 10);
   if (!Number.isFinite(n) || n < 1 || n > 10) {
     console.error('Usage: verify.js <1..10> | all');
