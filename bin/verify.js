@@ -1452,6 +1452,122 @@ function runModule8() {
 
 MODULE_RUNNERS[8] = runModule8;
 
+// ── Module 9: Multi-Profile / Specialist Agents ───────────────────────────
+// Spec §6 M9. 3 deterministic + 2 manual = 5 checks.
+//
+// Directory layout (confirmed 2026-05-28 via `hermes profile create writer --clone`):
+//   ~/.hermes/profiles/<name>/   — per-profile home
+//   ~/.hermes/profiles/writer/SOUL.md — writer profile identity file
+//
+// SHA-256 distinctness check: proves isolation, not quality. If the writer
+// SOUL.md is byte-identical to root SOUL.md (freshly cloned, not yet edited)
+// we FAIL writer-soul-distinct-files and tell the learner to edit the file.
+//
+// Acknowledged gap (spec §10 item 14): cross-profile delegation (root Hermes
+// invoking the writer profile and receiving back a draft) is unknown in
+// Hermes v0.12.0. M9 treats profiles as isolated; if delegation surfaces in
+// a later Hermes version, M9 will grow a cross-profile-comms manual.
+function runModule9() {
+  const checks = [];
+  const profilesDir = expandHome('~/.hermes/profiles');
+  const writerDir = `${profilesDir}/writer`;
+  const writerSoulPath = `${writerDir}/SOUL.md`;
+  const rootSoulPath = expandHome('~/.hermes/SOUL.md');
+
+  // ── writer-profile-exists ─────────────────────────────────────────────────
+  if (!fileExists(profilesDir)) {
+    checks.push(fail(
+      'writer-profile-exists',
+      `${profilesDir} not found. Create a writer profile via \`hermes profile create writer --clone\`.`,
+      { profiles_dir: profilesDir, exists: false }
+    ));
+    // Emit dependent fails so the full check list is always present in output.
+    checks.push(fail('writer-soul-exists', 'No profiles directory', { dependent_on: 'writer-profile-exists' }));
+    checks.push(fail('writer-soul-distinct-files', 'No profiles directory', { dependent_on: 'writer-profile-exists' }));
+  } else if (!fileExists(writerDir)) {
+    checks.push(fail(
+      'writer-profile-exists',
+      `${writerDir} not found. Create a writer profile via \`hermes profile create writer --clone\`.`,
+      { writer_dir: writerDir, exists: false }
+    ));
+    checks.push(fail('writer-soul-exists', 'No writer profile', { dependent_on: 'writer-profile-exists' }));
+    checks.push(fail('writer-soul-distinct-files', 'No writer profile', { dependent_on: 'writer-profile-exists' }));
+  } else {
+    checks.push(pass(
+      'writer-profile-exists',
+      'Writer profile directory exists',
+      { path: writerDir }
+    ));
+
+    // ── writer-soul-exists ──────────────────────────────────────────────────
+    if (!fileExists(writerSoulPath)) {
+      checks.push(fail(
+        'writer-soul-exists',
+        `${writerSoulPath} not found. Writer profile created but SOUL.md missing — try \`hermes profile create writer --clone\` again.`,
+        { path: writerSoulPath }
+      ));
+      checks.push(fail('writer-soul-distinct-files', 'No writer SOUL.md', { dependent_on: 'writer-soul-exists' }));
+    } else {
+      const writerContent = readFileSafe(writerSoulPath) || '';
+      if (writerContent.trim().length === 0) {
+        checks.push(fail('writer-soul-exists', 'Writer SOUL.md is empty', { path: writerSoulPath }));
+        checks.push(fail('writer-soul-distinct-files', 'Writer SOUL.md is empty', { dependent_on: 'writer-soul-exists' }));
+      } else {
+        checks.push(pass(
+          'writer-soul-exists',
+          'Writer SOUL.md present and non-empty',
+          { path: writerSoulPath, length: writerContent.length }
+        ));
+
+        // ── writer-soul-distinct-files (SHA-256) ────────────────────────────
+        // Proves file isolation — not content quality. If freshly cloned and
+        // not yet edited, the hashes will be identical → FAIL with guidance.
+        // Symlink case: a symlink would have the same hash AND the same bytes;
+        // the hash check catches both symlinks and byte-for-byte copies.
+        const rootContent = readFileSafe(rootSoulPath) || '';
+        const writerHash = createHash('sha256').update(writerContent).digest('hex');
+        const rootHash = createHash('sha256').update(rootContent).digest('hex');
+        if (writerHash === rootHash) {
+          checks.push(fail(
+            'writer-soul-distinct-files',
+            'Writer SOUL.md is byte-identical to root SOUL.md. Edit `~/.hermes/profiles/writer/SOUL.md` to give it a distinct long-form-writing voice — not just a copy with one line changed.',
+            {
+              writer_hash_prefix: writerHash.slice(0, 12),
+              root_hash_prefix: rootHash.slice(0, 12),
+              identical: true,
+              note: 'Proves isolation, not quality — see writer-soul-distinct-content manual.',
+            }
+          ));
+        } else {
+          checks.push(pass(
+            'writer-soul-distinct-files',
+            'Writer SOUL.md is a distinct file (different SHA-256 hash from root SOUL.md)',
+            {
+              writer_hash_prefix: writerHash.slice(0, 12),
+              root_hash_prefix: rootHash.slice(0, 12),
+              note: 'Proves isolation, not quality — see writer-soul-distinct-content manual.',
+            }
+          ));
+        }
+      }
+    }
+  }
+
+  // ── Manuals (always emit regardless of deterministic state) ──────────────
+  checks.push(manual(
+    'writer-soul-distinct-content',
+    'Read your writer profile\'s SOUL.md voice section; confirm it gives specific long-form guidance materially different from your root SOUL.md (not just a copy with one line changed).'
+  ));
+  checks.push(manual(
+    'profile-delegation',
+    'Open your writer profile (`hermes -p writer`) and ask for a 500-word draft on the same topic you\'d ask your root Hermes. Compare both drafts; confirm the writer\'s draft has a distinct voice (not just identical output from a renamed clone).'
+  ));
+
+  emitResult(9, checks, checkIntegrity());
+}
+
+MODULE_RUNNERS[9] = runModule9;
+
 async function runAll() {
   const integrity = checkIntegrity();
   console.log('INTEGRITY:', JSON.stringify(integrity));
