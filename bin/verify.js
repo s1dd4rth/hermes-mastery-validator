@@ -1568,6 +1568,156 @@ function runModule9() {
 
 MODULE_RUNNERS[9] = runModule9;
 
+// ── RFC 4648 base32 encoder ───────────────────────────────────────────────
+// Used exclusively for the HMS- completion code (M10). Base32 NOT base64.
+// Alphabet: ABCDEFGHIJKLMNOPQRSTUVWXYZ234567 (standard RFC 4648 §6).
+function encodeBase32(buf) {
+  const alphabet = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ234567';
+  let bits = 0, value = 0, output = '';
+  for (const byte of buf) {
+    value = (value << 8) | byte;
+    bits += 8;
+    while (bits >= 5) {
+      output += alphabet[(value >>> (bits - 5)) & 31];
+      bits -= 5;
+    }
+  }
+  if (bits > 0) output += alphabet[(value << (5 - bits)) & 31];
+  return output;
+}
+
+async function runModule10() {
+  const checks = [];
+
+  // ── claw-reviewed-setup: run M1-M9 as subprocesses ────────────────────
+  // Each module is invoked fresh (no shared state) with a generous timeout.
+  // The loop is intentionally 1..9 only — bonus modules are EXCLUDED from
+  // the completion code per spec §6 M10 (bonus-exclusion principle).
+  const reports = [];
+  for (let n = 1; n <= 9; n++) {
+    try {
+      const r = runCmd('node', [__filename, String(n)], { timeoutMs: 60_000 });
+      if (r.status !== 0) {
+        reports.push({ module: n, error: r.stderr || 'non-zero exit', stdout_partial: (r.stdout || '').slice(0, 200) });
+      } else {
+        const parsed = JSON.parse(r.stdout);
+        reports.push(parsed);
+      }
+    } catch (e) {
+      reports.push({ module: n, error: 'JSON parse failed: ' + e.message });
+    }
+  }
+
+  const errors = reports.filter(r => r.error);
+  if (errors.length === 0) {
+    checks.push(pass(
+      'claw-reviewed-setup',
+      'All 9 prior-module verifications executed without error',
+      { modules_run: 9 }
+    ));
+  } else {
+    checks.push(fail(
+      'claw-reviewed-setup',
+      `Modules failed to execute: ${errors.map(e => 'M' + e.module).join(', ')}`,
+      { failed_modules: errors.map(e => e.module) }
+    ));
+  }
+
+  // ── completion-report: per-module tally ───────────────────────────────
+  const tally = reports.map(r => {
+    if (r.error) return { module: r.module, error: true };
+    const cs = r.checks || [];
+    return {
+      module: r.module,
+      passed: cs.filter(c => c.pass === true).length,
+      failed: cs.filter(c => c.pass === false).length,
+      manual: cs.filter(c => c.pass === null).length,
+      total: cs.length,
+    };
+  });
+  checks.push(pass(
+    'completion-report',
+    'Per-module M1-M9 tally formed',
+    { per_module: tally }
+  ));
+
+  // ── completion-code: HMS-<base32(sha256(canonical_tally))> ────────────
+  // Canonical form: fixed key order (module, passed, failed, manual, total).
+  // DO NOT change this key order — it would invalidate existing learner codes.
+  const canonical = JSON.stringify(tally.map(t =>
+    t.error
+      ? { module: t.module, error: true }
+      : { module: t.module, passed: t.passed, failed: t.failed, manual: t.manual, total: t.total }
+  ));
+  const hash = createHash('sha256').update(canonical).digest();
+  const b32 = encodeBase32(hash).slice(0, 12);
+  const completionCode = `HMS-${b32}`;
+  checks.push(pass(
+    'completion-code',
+    'Deterministic completion code computed',
+    {
+      code: completionCode,
+      canonical_length: canonical.length,
+      note: 'Same setup state → same code on every run. Code changes only if check counts change.',
+    }
+  ));
+
+  // ── session-search-returns-results ────────────────────────────────────
+  // Phase 0 probe (2026-05-28): `hermes search` is NOT a valid subcommand in
+  // v0.12.0 — the CLI rejects it with "invalid choice: 'search'".
+  // Honest downgrade to manual per spec §6 M10 Phase 0 strategy.
+  checks.push(manual(
+    'session-search-returns-results',
+    'Open the Hermes dashboard (run `hermes dashboard` or navigate to http://localhost:1919). Use the search bar to look up a phrase you used in an earlier module — e.g., a name or topic from M2 or M3. Confirm it returns at least one result. (The `hermes search` CLI surface does not exist in v0.12.0; dashboard search is the only surface available.)'
+  ));
+
+  // ── curator-has-activity ──────────────────────────────────────────────
+  // Phase 0 probe confirmed: ~/.hermes/logs/curator/ (NOT ~/.hermes/curator/).
+  // Look for timestamped directories (YYYYMMDD-HHMMSS pattern).
+  const curatorLogPath = expandHome('~/.hermes/logs/curator');
+  if (!fileExists(curatorLogPath)) {
+    checks.push(fail(
+      'curator-has-activity',
+      `${curatorLogPath} not found. Curator has not yet run. Use Hermes for a while and the Curator will produce activity logs automatically.`,
+      { path: curatorLogPath }
+    ));
+  } else {
+    try {
+      const entries = fs.readdirSync(curatorLogPath, { withFileTypes: true });
+      const timestampDirs = entries.filter(e => e.isDirectory() && /^[0-9]{8}/.test(e.name));
+      if (timestampDirs.length > 0) {
+        checks.push(pass(
+          'curator-has-activity',
+          `${timestampDirs.length} Curator activity timestamp(s) recorded`,
+          { count: timestampDirs.length, latest: timestampDirs[timestampDirs.length - 1].name, path: curatorLogPath }
+        ));
+      } else {
+        checks.push(fail(
+          'curator-has-activity',
+          `${curatorLogPath} exists but contains no timestamped activity directories. Curator has not yet completed a session.`,
+          { entries_count: entries.length, path: curatorLogPath }
+        ));
+      }
+    } catch (e) {
+      checks.push(fail('curator-has-activity', `Cannot read ${curatorLogPath}: ${e.message}`, { path: curatorLogPath }));
+    }
+  }
+
+  // ── Manuals ───────────────────────────────────────────────────────────
+  checks.push(manual(
+    'assessment-opened',
+    'Open the course assessment Google Form (linked in the M10 panel) and submit your HMS- completion code from above. (URL will be added by the course owner.)'
+  ));
+  checks.push(manual(
+    'loop-honesty-check',
+    'Open the Hermes dashboard. Can you point at evidence of the self-improving loop: a Curator run timestamp, a session search returning a fact the agent learned about you, a Honcho user-model entry? If you cannot, M10 has *named* the loop but not *shown* it — that\'s a course bug, please report.'
+  ));
+
+  emitResult(10, checks, checkIntegrity());
+}
+
+MODULE_RUNNERS[10] = runModule10;
+
 async function runAll() {
   const integrity = checkIntegrity();
   console.log('INTEGRITY:', JSON.stringify(integrity));
