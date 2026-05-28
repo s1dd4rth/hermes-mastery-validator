@@ -666,6 +666,156 @@ function runModule4() {
 
 MODULE_RUNNERS[4] = runModule4;
 
+// ── M5 allowlists (locked by probing dev box 2026-05-28) ─────────────────────
+//
+// Methodology (Phase 2 Task 2.4):
+//   1. Enumerated ~/.hermes/skills/ on the dev box.
+//   2. Checked for _meta.json presence: hub-installed skills get _meta.json
+//      written by Hermes on install. All 24 directories on the dev box had
+//      NO _meta.json — none were hub-installed via `hermes skills install`.
+//   3. Cross-referenced against ~/.hermes/skills/.bundled_manifest (a
+//      Hermes-internal file with slug:hash entries for every skill that ships
+//      with `hermes setup`). Only `dogfood` and `yuanbao` match top-level
+//      directory names in the manifest. All other directories (apple, creative,
+//      devops, etc.) are *category folders* containing nested skills — they have
+//      no SKILL.md at their root and are therefore filtered out BEFORE the
+//      bundled/custom check.
+//   4. `hermes-mastery-validator` is a symlink (dev workflow) — excluded by
+//      VALIDATOR_SKILL_SLUG self-exclusion.
+//
+// Classification:
+//   - SKILL.md present + NOT validator:  dogfood, yuanbao → BUNDLED
+//   - Category folders (no SKILL.md at root) → filtered out by withSkillMd step
+//   - _meta.json present → hub-installed (none on this box at build time)
+//   - SKILL.md present + NOT bundled + NOT hub-known → user-created (custom)
+//
+// Heuristic:
+//   _meta.json present  → hub-installed
+//   _meta.json absent + symlink  → dev workflow (validator only)
+//   _meta.json absent + real dir + not in M5_BUNDLED_SKILLS → user-created (custom)
+
+const VALIDATOR_SKILL_SLUG = 'hermes-mastery-validator';
+
+// Hermes-bundled skills present out-of-box (locked from dev-box probe 2026-05-28).
+// These ship with `hermes setup`. NOT user-created. Do NOT count toward custom-skill.
+const M5_BUNDLED_SKILLS = [
+  'dogfood',
+  'yuanbao',
+];
+
+// Hub-installed skills (via `hermes skills install <owner>/<slug>`) that the
+// curriculum recommended or the user installed before M5 build time.
+// Empty at v1 — no hub installs were present on the dev box at build time.
+// The M5 curriculum guides users to install ONE hub skill of their choice;
+// that skill will have _meta.json and is detected by a separate path (below),
+// not this allowlist. This list is kept for future overrides if needed.
+const M5_HUB_KNOWN_NOT_CUSTOM = [];
+
+function runModule5() {
+  const checks = [];
+  const skillsDir = expandHome('~/.hermes/skills');
+
+  if (!fileExists(skillsDir)) {
+    checks.push(fail('at-least-one-installed-skill', `${skillsDir} not found`));
+    checks.push(fail('at-least-one-custom-skill', `${skillsDir} not found`));
+    checks.push(manual(
+      'skills-fresh-session',
+      'Start a fresh session (`hermes /new` or equivalent) and verify both your hub-installed skill and your custom skill load. If the custom skill doesn\'t surface, it didn\'t really get created.'
+    ));
+    emitResult(5, checks, checkIntegrity());
+    return;
+  }
+
+  // Enumerate top-level directories under ~/.hermes/skills/
+  let allDirs = [];
+  try {
+    allDirs = fs.readdirSync(expandHome(skillsDir), { withFileTypes: true })
+      .filter(e => e.isDirectory() || e.isSymbolicLink())
+      .map(e => e.name)
+      .filter(name => !name.startsWith('.'));  // exclude .archive, .hub, etc.
+  } catch (e) {
+    checks.push(fail('at-least-one-installed-skill', `Cannot read ${skillsDir}: ${e.message}`));
+    checks.push(fail('at-least-one-custom-skill', `Cannot read ${skillsDir}: ${e.message}`));
+    checks.push(manual(
+      'skills-fresh-session',
+      'Start a fresh session (`hermes /new` or equivalent) and verify both your hub-installed skill and your custom skill load. If the custom skill doesn\'t surface, it didn\'t really get created.'
+    ));
+    emitResult(5, checks, checkIntegrity());
+    return;
+  }
+
+  // SELF-EXCLUSION (spec §13): drop the validator skill from the count.
+  // A learner who installs ONLY hermes-mastery-validator must NOT pass M5
+  // with zero learning — this exclusion enforces that invariant.
+  const nonValidatorDirs = allDirs.filter(name => name !== VALIDATOR_SKILL_SLUG);
+
+  // Require SKILL.md exists at root of each directory (category folders don't have one)
+  const expandedSkillsDir = expandHome('~/.hermes/skills');
+  const withSkillMd = nonValidatorDirs.filter(
+    name => existsSync(path.join(expandedSkillsDir, name, 'SKILL.md'))
+  );
+
+  // ── at-least-one-installed-skill ───────────────────────────────────────────
+  if (withSkillMd.length === 0) {
+    checks.push(fail(
+      'at-least-one-installed-skill',
+      `No non-validator skills with SKILL.md found in ${skillsDir}. Install a skill via \`hermes skills install <owner>/<slug>\` or create a custom skill. (The validator skill itself is excluded by design per spec §13 — a validator-only install does not satisfy this check.)`,
+      { non_validator_count: 0 }
+    ));
+  } else {
+    checks.push(pass(
+      'at-least-one-installed-skill',
+      `${withSkillMd.length} non-validator skill(s) with SKILL.md found`,
+      { count: withSkillMd.length, examples: withSkillMd.slice(0, 3) }
+    ));
+  }
+
+  // ── at-least-one-custom-skill ──────────────────────────────────────────────
+  // A skill is "custom" (user-created) if:
+  //   - It has SKILL.md (already filtered above)
+  //   - NOT in M5_BUNDLED_SKILLS (ships with hermes setup)
+  //   - NOT in M5_HUB_KNOWN_NOT_CUSTOM (hub-installed by curriculum recommendation)
+  //   - Does NOT have a _meta.json (hub-installed skills get one; user-created don't)
+  // The _meta.json check is belt-and-suspenders: it catches hub-installed skills
+  // even if their slug isn't in M5_HUB_KNOWN_NOT_CUSTOM.
+  const customSkills = withSkillMd.filter(name => {
+    if (M5_BUNDLED_SKILLS.includes(name)) return false;
+    if (M5_HUB_KNOWN_NOT_CUSTOM.includes(name)) return false;
+    // Hub-installed skills have _meta.json; user-created skills do not
+    if (existsSync(path.join(expandedSkillsDir, name, '_meta.json'))) return false;
+    return true;
+  });
+
+  if (customSkills.length === 0) {
+    checks.push(fail(
+      'at-least-one-custom-skill',
+      'No user-created skill detected. All installed skills are either Hermes-bundled or hub-installed. ' +
+      'Create a custom skill: start a multi-step task with your Claw, then ask it to "save this as a skill" or use `hermes skills new` to scaffold one.',
+      {
+        non_validator_count: withSkillMd.length,
+        bundled_size: M5_BUNDLED_SKILLS.length,
+        hub_known_size: M5_HUB_KNOWN_NOT_CUSTOM.length,
+      }
+    ));
+  } else {
+    checks.push(pass(
+      'at-least-one-custom-skill',
+      `${customSkills.length} custom (user-created) skill(s) detected`,
+      { count: customSkills.length, examples: customSkills.slice(0, 3) }
+    ));
+  }
+
+  // ── Manual ────────────────────────────────────────────────────────────────
+  checks.push(manual(
+    'skills-fresh-session',
+    'Start a fresh session (`hermes /new` or equivalent) and verify both your hub-installed skill and your custom skill load. If the custom skill doesn\'t surface, it didn\'t really get created.'
+  ));
+
+  emitResult(5, checks, checkIntegrity());
+}
+
+MODULE_RUNNERS[5] = runModule5;
+
 async function runAll() {
   const integrity = checkIntegrity();
   console.log('INTEGRITY:', JSON.stringify(integrity));
