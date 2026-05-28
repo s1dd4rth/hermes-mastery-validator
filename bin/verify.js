@@ -1560,7 +1560,7 @@ function runModule9() {
   ));
   checks.push(manual(
     'profile-delegation',
-    'Open your writer profile (`hermes -p writer`) and ask for a 500-word draft on the same topic you\'d ask your root Hermes. Compare both drafts; confirm the writer\'s draft has a distinct voice (not just identical output from a renamed clone).'
+    'Open your writer profile (`writer chat` or `hermes profile use writer`) and ask for a 500-word draft on the same topic you\'d ask your root Hermes. Compare both drafts; confirm the writer\'s draft has a distinct voice (not just identical output from a renamed clone). (Note: `hermes -p writer` is not a valid flag in v0.12.0 — use the alias-wrapper invocation.)'
   ));
 
   emitResult(9, checks, checkIntegrity());
