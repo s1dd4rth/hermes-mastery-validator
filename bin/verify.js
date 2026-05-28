@@ -552,6 +552,120 @@ function runModule3() {
 
 MODULE_RUNNERS[3] = runModule3;
 
+function runModule4() {
+  const checks = [];
+
+  // ── telegram-configured ────────────────────────────────────────────────
+  // Phase 0 §2 finding: the Telegram bot token lives in ~/.hermes/.env,
+  // NOT in config.yaml. We check for presence of the token line only —
+  // the value is never logged, never included in evidence, never echoed.
+  const envPath = expandHome('~/.hermes/.env');
+  if (!fileExists(envPath)) {
+    checks.push(fail(
+      'telegram-configured',
+      `${envPath} not found. Run \`hermes gateway setup\` to configure Telegram.`,
+      { present: false }
+    ));
+  } else {
+    const envContent = readFileSafe(envPath) || '';
+    // Accept both TELEGRAM_BOT_TOKEN and HERMES_TELEGRAM_BOT_TOKEN (belt-and-suspenders).
+    // capture group 1 = var name, capture group 2 = value — we check length of [2]
+    // but NEVER include it in evidence or logs.
+    const match = envContent.match(/^(TELEGRAM_BOT_TOKEN|HERMES_TELEGRAM_BOT_TOKEN)\s*=\s*(\S+)/m);
+    if (match) {
+      const valueLength = match[2].length;
+      const isPlaceholder = /<your[-_ ]?token>|placeholder|TODO/i.test(match[2]);
+      if (valueLength > 10 && !isPlaceholder) {
+        checks.push(pass(
+          'telegram-configured',
+          'Telegram bot token is set in ~/.hermes/.env (presence-only — value never logged)',
+          { var: match[1], present: true }
+          // IMPORTANT: match[2] (the token value) is intentionally excluded from evidence
+        ));
+      } else {
+        checks.push(fail(
+          'telegram-configured',
+          'Telegram env var present but value looks like a placeholder or is too short.',
+          { var: match[1], present: false, hint: 'Run `hermes gateway setup` to set a real token.' }
+        ));
+      }
+    } else {
+      checks.push(fail(
+        'telegram-configured',
+        'TELEGRAM_BOT_TOKEN not found in ~/.hermes/.env. Run `hermes gateway setup` to configure.',
+        { present: false, hint: 'Run `hermes gateway setup` and provide your BotFather token when prompted.' }
+      ));
+    }
+  }
+
+  // ── gateway-bot-bound ──────────────────────────────────────────────────
+  // Probed 2026-05-28: `hermes gateway status` output when not running:
+  //   "✗ Gateway is not running\n\nTo start:\n  hermes gateway run ..."
+  // When running with Telegram configured, expected patterns include "✓" or
+  // "running" and "telegram" (channel name or type). We use a two-tier check:
+  //   1. Positive (live): "telegram" + live indicator (✓ / live / running / connected / ok / active / started)
+  //   2. Configured but not live: "telegram" mentioned without live indicator
+  //   3. Not configured: no "telegram" mention at all
+  // Config-grep alone (telegram-configured above) proves credentials exist,
+  // not that Hermes actually bound to the bot — this is the real check.
+  const statusResult = runCmd('hermes', ['gateway', 'status']);
+  if (statusResult.status !== 0 && !statusResult.stdout && !statusResult.stderr) {
+    checks.push(fail(
+      'gateway-bot-bound',
+      '`hermes gateway status` produced no output. Is Hermes installed correctly?',
+      { exit: statusResult.status }
+    ));
+  } else {
+    const output = (statusResult.stdout || '') + '\n' + (statusResult.stderr || '');
+    const isGatewayRunning = /✓|Gateway is running/i.test(output);
+    const hasTelegram = /telegram/i.test(output);
+    const telegramLive = hasTelegram && /telegram[^\n]*?(live|running|connected|ok|active|✓|started)/i.test(output);
+
+    if (telegramLive) {
+      checks.push(pass(
+        'gateway-bot-bound',
+        'Telegram channel is reported as live by `hermes gateway status`',
+        { evidence: 'matched telegram + live indicator pattern' }
+      ));
+    } else if (hasTelegram && isGatewayRunning) {
+      checks.push(fail(
+        'gateway-bot-bound',
+        'Gateway is running and Telegram is mentioned, but no live/connected indicator found. ' +
+        'Check `hermes gateway logs` for errors.',
+        { evidence: 'channel mentioned without live indicator' }
+      ));
+    } else if (!isGatewayRunning) {
+      checks.push(fail(
+        'gateway-bot-bound',
+        'Gateway is not running. Run `hermes gateway start` (or `hermes gateway run` for foreground), ' +
+        'then re-run the validator.',
+        { evidence: 'gateway not running' }
+      ));
+    } else {
+      checks.push(fail(
+        'gateway-bot-bound',
+        'No Telegram channel found in `hermes gateway status`. Run `hermes gateway setup` to configure Telegram first.',
+        { evidence: 'no telegram mention in status output' }
+      ));
+    }
+  }
+
+  // ── telegram-responds (manual) ─────────────────────────────────────────
+  // Config + gateway-side checks above only prove credentials are set and the
+  // gateway claims to be bound. The only proof messages actually flow is the
+  // live round-trip: you send, the agent replies.
+  checks.push(manual(
+    'telegram-responds',
+    'Send a message to your Hermes bot from your phone and confirm a reply arrives. ' +
+    'The deterministic checks above only confirm config + gateway-side wiring — they do not ' +
+    'prove messages actually flow end-to-end. This round-trip is the real proof.'
+  ));
+
+  emitResult(4, checks, checkIntegrity());
+}
+
+MODULE_RUNNERS[4] = runModule4;
+
 async function runAll() {
   const integrity = checkIntegrity();
   console.log('INTEGRITY:', JSON.stringify(integrity));
