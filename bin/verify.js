@@ -1193,6 +1193,265 @@ function runModule7() {
 
 MODULE_RUNNERS[7] = runModule7;
 
+// ── M8 — Gmail + Calendar (OAuth) ────────────────────────────────────────────
+//
+// Probe results (2026-05-28):
+//   - Gmail/Calendar is provided by ~/.hermes/skills/productivity/google-workspace/
+//   - SKILL.md at that path explicitly mentions Gmail AND Calendar (bundled)
+//   - scripts/google_api.py contains hardcoded OAuth scopes:
+//       gmail.readonly, gmail.send, gmail.modify, calendar (full)
+//   - ~/.hermes/auth.json exists, mode 600 (owner-only) — stat only, NEVER read
+//   - google_client_secret.json and google_oauth_pending.json also present
+//   - No separate Calendar skill exists — Calendar is bundled in google-workspace
+//   - SOUL.md is 15 lines — no outbound-email approval rule present (honest FAIL)
+//
+// Security posture (applies to every line of runModule8):
+//   - oauth-credentials-present: stat ONLY — no read, no content inspection
+//   - oauth-scopes: grep skill SOURCE only — never touch auth.json or token files
+//   - Token values (ya29., 1//, GOCSPX-) MUST NOT appear in evidence or logs
+//   - No readFileSafe() call on any OAuth credential file path
+
+function runModule8() {
+  const checks = [];
+  const skillsDir = expandHome('~/.hermes/skills');
+
+  // ── gmail-skill-installed ────────────────────────────────────────────────
+  // Phase 0 / Step 1 probe (2026-05-28): the Gmail skill is installed at
+  // ~/.hermes/skills/productivity/google-workspace/ — a nested path not covered
+  // by the flat allowlist. We check flat names first, then nested paths.
+  const acceptedGmailNames = ['gmail', 'google-gmail', 'google_gmail', 'nous-gmail', 'mail', 'google-workspace'];
+  let gmailFound = null;
+  for (const name of acceptedGmailNames) {
+    if (fileExists(`${skillsDir}/${name}/SKILL.md`)) {
+      gmailFound = name;
+      break;
+    }
+  }
+  // Check category-nested paths (confirmed on dev box: productivity/google-workspace)
+  if (!gmailFound) {
+    const nestedPaths = [
+      'productivity/google-workspace',
+      'productivity/gmail',
+      'communication/gmail',
+    ];
+    for (const subpath of nestedPaths) {
+      if (fileExists(`${skillsDir}/${subpath}/SKILL.md`)) {
+        gmailFound = subpath;
+        break;
+      }
+    }
+  }
+  if (gmailFound) {
+    checks.push(pass(
+      'gmail-skill-installed',
+      `Gmail skill '${gmailFound}' is installed`,
+      { name: gmailFound, accepted_names: acceptedGmailNames }
+    ));
+  } else {
+    checks.push(fail(
+      'gmail-skill-installed',
+      `No Gmail skill installed. Looked for: ${acceptedGmailNames.join(', ')} (flat) + productivity/google-workspace, productivity/gmail, communication/gmail (nested).`,
+      { accepted_names: acceptedGmailNames }
+    ));
+  }
+
+  // ── calendar-skill-or-tool-enabled ───────────────────────────────────────
+  // Three signals (priority order):
+  //   1. Separate Calendar skill directory with SKILL.md
+  //   2. Gmail skill SKILL.md bundles Calendar (grep for "calendar")
+  //   3. Config flag apis.calendar.enabled = true (likely absent per Phase 0)
+  //
+  // Step 1 probe result: google-workspace SKILL.md contains "Calendar" multiple
+  // times (tags, description, instructions) — calendar is bundled.
+  const acceptedCalendarNames = ['calendar', 'google-calendar', 'google_calendar', 'nous-calendar'];
+  let calendarEvidence = null;
+  for (const name of acceptedCalendarNames) {
+    if (fileExists(`${skillsDir}/${name}/SKILL.md`)) {
+      calendarEvidence = { via: 'separate-skill', name };
+      break;
+    }
+  }
+  // Check nested calendar paths
+  if (!calendarEvidence) {
+    const nestedCalPaths = ['productivity/google-calendar', 'productivity/calendar'];
+    for (const subpath of nestedCalPaths) {
+      if (fileExists(`${skillsDir}/${subpath}/SKILL.md`)) {
+        calendarEvidence = { via: 'separate-skill', name: subpath };
+        break;
+      }
+    }
+  }
+  // Check if gmail skill bundles calendar (grep SKILL.md, NOT credentials)
+  if (!calendarEvidence && gmailFound) {
+    const gmailSkillMd = gmailFound.includes('/')
+      ? `${skillsDir}/${gmailFound}/SKILL.md`
+      : `${skillsDir}/${gmailFound}/SKILL.md`;
+    const gmailContent = readFileSafe(expandHome(gmailSkillMd)) || '';
+    if (/calendar/i.test(gmailContent)) {
+      calendarEvidence = { via: 'bundled-in-gmail-skill', name: gmailFound };
+    }
+  }
+  // Config flag (absent on dev box per Phase 0, but probe anyway)
+  if (!calendarEvidence) {
+    const flag = readYamlValue('~/.hermes/config.yaml', 'apis.calendar.enabled');
+    if (flag === true || flag === 'true') {
+      calendarEvidence = { via: 'config-flag', key: 'apis.calendar.enabled' };
+    }
+  }
+  if (calendarEvidence) {
+    checks.push(pass(
+      'calendar-skill-or-tool-enabled',
+      'Calendar surface reachable',
+      calendarEvidence
+    ));
+  } else {
+    checks.push(fail(
+      'calendar-skill-or-tool-enabled',
+      'No Calendar surface detected. Need: separate Calendar skill OR Gmail skill bundling Calendar OR apis.calendar.enabled config flag.',
+      { checked: ['skill-allowlist', 'nested-paths', 'gmail-bundled', 'config-flag'] }
+    ));
+  }
+
+  // ── oauth-credentials-present (STAT ONLY — never read contents) ──────────
+  // Step 1 probe confirmed: ~/.hermes/auth.json exists, mode 600.
+  // google_client_secret.json mode is 644 (world-readable — that file is the
+  // app credential, not the user token, so less sensitive — but we still report
+  // the mode honestly and flag if it's not 600 for auth.json).
+  // CRITICAL: statMode() does NOT read file contents — it only calls statSync()
+  // and extracts st.mode. The token value (ya29.xxx etc.) NEVER touches this code.
+  const oauthCandidates = [
+    '~/.hermes/auth.json',
+    '~/.hermes/google_token.json',
+    '~/.hermes/google_client_secret.json',
+  ];
+  let oauthPath = null;
+  let oauthMode = null;
+  for (const cand of oauthCandidates) {
+    const stat = statMode(cand);
+    if (stat.exists && !stat.isDirectory) {
+      oauthPath = cand;
+      oauthMode = stat.mode;
+      break;
+    }
+  }
+  if (!oauthPath) {
+    checks.push(fail(
+      'oauth-credentials-present',
+      'No Google OAuth credential file found. Run `hermes setup` (Google integration) or install the Gmail skill\'s OAuth flow.',
+      { candidates_checked: oauthCandidates }
+    ));
+  } else if (oauthMode === '600') {
+    checks.push(pass(
+      'oauth-credentials-present',
+      'OAuth credential file exists with owner-only permissions (600)',
+      { path: oauthPath, mode: oauthMode, note: 'stat only — file contents never read' }
+    ));
+  } else {
+    checks.push(fail(
+      'oauth-credentials-present',
+      `OAuth credential file mode is ${oauthMode}, expected 600. Run \`chmod 600 ${expandHome(oauthPath)}\`.`,
+      { path: oauthPath, mode: oauthMode }
+    ));
+  }
+
+  // ── oauth-scopes-cover-mail-and-calendar ─────────────────────────────────
+  // Strategy: grep gmail skill SOURCE files (NOT auth.json / token files) for
+  // hardcoded scope strings. Step 1 probe confirmed scopes are in google_api.py:
+  //   gmail.readonly, gmail.send, gmail.modify, calendar (full access)
+  //
+  // SECURITY: readFileSafe is called ONLY on source files (.py, .ts, .js, .json, .md)
+  // whose names do NOT match secret/token/credential patterns. auth.json and
+  // google_token.json are NEVER opened — we stat those but never read them.
+  if (gmailFound) {
+    const gmailSkillDir = expandHome(`${skillsDir}/${gmailFound}`);
+    let gmailScopesText = '';
+    try {
+      const files = require('node:fs').readdirSync(gmailSkillDir, { recursive: true, withFileTypes: true })
+        .filter(d => d.isFile && typeof d.isFile === 'function' ? d.isFile() : !d.isDirectory)
+        .filter(d => /\.(py|ts|js|json|md)$/.test(d.name))
+        .filter(d => !/secret|token|credential|\.env/i.test(d.name));
+      for (const f of files) {
+        // Node 18–20: f.path; Node 21+: f.parentPath. Fall back to gmailSkillDir.
+        const parent = f.parentPath || f.path || gmailSkillDir;
+        const filePath = path.join(parent, f.name);
+        const content = readFileSafe(filePath) || '';
+        gmailScopesText += content + '\n';
+      }
+    } catch {}
+    const hasGmailScope = /gmail\.(send|readonly|modify|labels)|googleapis.*gmail|mail\.google/i.test(gmailScopesText);
+    const hasCalendarScope = /calendar\.(events|readonly|acls)|googleapis.*calendar|auth\/calendar(?!\.)|\bauth\/calendar\b/i.test(gmailScopesText);
+    if (hasGmailScope && hasCalendarScope) {
+      checks.push(pass(
+        'oauth-scopes-cover-mail-and-calendar',
+        'Gmail and Calendar scope strings detected in Gmail skill source',
+        { gmail_scope: true, calendar_scope: true, method: 'skill-source-grep', note: 'Grep on source code only — token file never read' }
+      ));
+    } else if (hasGmailScope || hasCalendarScope) {
+      checks.push(fail(
+        'oauth-scopes-cover-mail-and-calendar',
+        'Only one of Gmail / Calendar scope strings detected in skill source. Both are required for M8.',
+        { gmail_scope: hasGmailScope, calendar_scope: hasCalendarScope, method: 'skill-source-grep' }
+      ));
+    } else {
+      // No scope strings found in source — downgrade to manual rather than FAIL
+      checks.push(manual(
+        'oauth-scopes-cover-mail-and-calendar',
+        'Could not detect OAuth scope strings in Gmail skill source files. Verify in Google Cloud Console > Credentials > OAuth consent screen that both Gmail and Calendar scopes are authorized. Do NOT paste token values into chat to verify — visual browser inspection only.'
+      ));
+    }
+  } else {
+    checks.push(manual(
+      'oauth-scopes-cover-mail-and-calendar',
+      'No Gmail skill installed — install one first, then re-run the validator. After installing, verify in Google Cloud Console that both Gmail and Calendar scopes are granted.'
+    ));
+  }
+
+  // ── outbound-approval-rule ────────────────────────────────────────────────
+  // Grep SOUL.md (stripped of HTML comments) for "outbound email" + approval language.
+  // Step 1 probe: SOUL.md is 15 lines with no outbound-email rule → honest FAIL.
+  //
+  // §10 item 16 caveat: whether SOUL.md is consulted at tool-call time (vs
+  // personality-only) is a load-bearing unknown. SOUL presence-only = weak signal.
+  // The approval-gate-works manual is the real enforcement test.
+  const soulPath = expandHome('~/.hermes/SOUL.md');
+  const soul = (readFileSafe(soulPath) || '').replace(/<!--[\s\S]*?-->/g, '');
+  const hasOutbound = /outbound\s+email/i.test(soul);
+  const hasApprovalLang = /approval|show.*(?:full\s+)?draft|wait.*approval|confirm.*before.*send/i.test(soul);
+  if (hasOutbound && hasApprovalLang) {
+    checks.push(pass(
+      'outbound-approval-rule',
+      'Outbound-email approval rule present in SOUL.md',
+      {
+        note: 'PRESENCE-ONLY. §10 item 16: whether SOUL.md is consulted at tool-call time is a load-bearing unknown. Enforcement verified by approval-gate-works manual.',
+      }
+    ));
+  } else {
+    checks.push(fail(
+      'outbound-approval-rule',
+      'No outbound-email approval rule found in SOUL.md. Add one in M8 Phase 5: "## Outbound Email Protocols\\nNever send an email without showing the full draft and waiting for explicit approval."',
+      { has_outbound_mention: hasOutbound, has_approval_language: hasApprovalLang }
+    ));
+  }
+
+  // ── Manuals (3) ───────────────────────────────────────────────────────────
+  checks.push(manual(
+    'test-email-sent-and-observable',
+    'Send a test email to yourself via the Gmail skill. Then ask the agent to scan your Gmail Sent folder for the message. Confirm BOTH: (a) it arrived in your inbox AND (b) it appears in Gmail Sent. Inbox-only is not sufficient — replay or forwarding could fake the inbox half. Sent-folder observability closes the loop on the agent actually initiating the send.'
+  ));
+  checks.push(manual(
+    'calendar-event-read',
+    'Ask the agent to read your Google Calendar and summarize the next 3 upcoming events. Confirm the events match what is actually on your calendar today. Cross-check against the calendar app or Google Calendar in a browser.'
+  ));
+  checks.push(manual(
+    'approval-gate-works',
+    'Try to send an email and explicitly cancel at the approval prompt. Then ask the agent to scan Gmail Sent: confirm nothing was sent. "Email never arrived in inbox" is not the same as "email was never sent" — the Sent-folder check is what closes this loop.'
+  ));
+
+  emitResult(8, checks, checkIntegrity());
+}
+
+MODULE_RUNNERS[8] = runModule8;
+
 async function runAll() {
   const integrity = checkIntegrity();
   console.log('INTEGRITY:', JSON.stringify(integrity));
