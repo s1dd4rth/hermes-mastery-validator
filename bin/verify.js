@@ -1721,7 +1721,29 @@ MODULE_RUNNERS[10] = runModule10;
 async function runAll() {
   const integrity = checkIntegrity();
   console.log('INTEGRITY:', JSON.stringify(integrity));
-  // Phase 4 Task 4.2 will iterate MODULE_RUNNERS and await each — kept async-ready now.
+  console.log('');
+
+  const summary = [];
+  for (const key of Object.keys(MODULE_RUNNERS).sort((a, b) => Number(a) - Number(b))) {
+    const n = Number(key);
+    try {
+      const r = runCmd('node', [__filename, String(n)], { timeoutMs: 60_000 });
+      if (r.status !== 0) {
+        summary.push(`M${n}: ERROR (exit ${r.status}: ${(r.stderr || '').slice(0, 100)})`);
+        continue;
+      }
+      const parsed = JSON.parse(r.stdout);
+      const checks = parsed.checks || [];
+      const passed = checks.filter(c => c.pass === true).length;
+      const failed = checks.filter(c => c.pass === false).length;
+      const manualCount = checks.filter(c => c.pass === null).length;
+      const total = checks.length;
+      summary.push(`M${n}: ${passed} PASS, ${failed} FAIL, ${manualCount} MANUAL (of ${total})`);
+    } catch (e) {
+      summary.push(`M${n}: ERROR (${e.message})`);
+    }
+  }
+  summary.forEach(line => console.log(line));
 }
 
 async function main() {
