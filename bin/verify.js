@@ -816,6 +816,233 @@ function runModule5() {
 
 MODULE_RUNNERS[5] = runModule5;
 
+// ── M6 allowlists (locked by probing Hermes source 2026-05-28) ───────────────
+//
+// Schema discovered from ~/.hermes/hermes-agent/cron/jobs.py:
+//   Top-level: { "jobs": [...], "updated_at": "ISO" }
+//   Each job:
+//     id, name, prompt, skills, skill, model, provider, base_url, script,
+//     context_from, schedule (nested object), schedule_display, repeat,
+//     enabled (bool), state, paused_at, paused_reason, created_at,
+//     next_run_at (ISO string | null), last_run_at, last_status, last_error,
+//     last_delivery_error, deliver (string: "origin"|"local"|"telegram:..."|...),
+//     origin (object|null), enabled_toolsets, workdir
+//
+//   schedule sub-object:
+//     { kind: "once"|"interval"|"cron", ... }
+//     kind="once":     { run_at: ISO }
+//     kind="interval": { minutes: int }
+//     kind="cron":     { expr: "0 9 * * *" }
+//
+//   NOTE: schedule.expr is only present for kind="cron". One-shot and interval
+//   jobs have no cron expression. The spec's "schedule expression" maps to either
+//   schedule.expr (cron), schedule.minutes (interval), or schedule.run_at (once).
+//
+//   timezone: Hermes does NOT store a per-job timezone in jobs.json. The
+//   scheduler uses the system timezone (via hermes_time.now()). There is no
+//   "tz" or "timezone" field on the job or the schedule sub-object. The spec
+//   check "cron-schedule-and-tz" is therefore RELAXED: we check that a schedule
+//   is present in any supported form (not that a separate tz field exists), and
+//   we report the schedule kind + whether a system timezone is configured in
+//   ~/.hermes/config.yaml.
+//
+//   delivery channel: job.deliver — string ("origin", "local", "telegram:...", etc.)
+//
+// System-default jobs: NONE. No factory/seed jobs found in the codebase. The
+// cron directory is only created when the user creates their first job.
+// M6_SYSTEM_DEFAULT_JOBS is empty.
+
+// Locked 2026-05-28: no system-default jobs are seeded by Hermes at install time.
+const M6_SYSTEM_DEFAULT_JOBS = [];
+
+function runModule6() {
+  const checks = [];
+  const cronPath = expandHome('~/.hermes/cron/jobs.json');
+
+  if (!fileExists(cronPath)) {
+    checks.push(fail(
+      'cron-exists',
+      `${cronPath} not found. Schedule your first cron in Hermes chat (e.g., "schedule a reminder in 30 minutes") or via the cronjob tool to create it.`,
+      { path: cronPath }
+    ));
+    checks.push(fail(
+      'cron-schedule-and-tz',
+      'No cron jobs file to check',
+      { dependent_on: 'cron-exists' }
+    ));
+    checks.push(fail(
+      'cron-enabled-and-bound',
+      'No cron jobs file to check',
+      { dependent_on: 'cron-exists' }
+    ));
+    checks.push(manual(
+      'cron-fires-end-to-end',
+      'Schedule a one-shot cron for two minutes from now, wait, and confirm you receive the message in your chosen channel. The deterministic checks above only verify the job is configured to fire; this confirms the executor + channel + delivery actually round-trip.'
+    ));
+    emitResult(6, checks, checkIntegrity());
+    return;
+  }
+
+  // Parse jobs.json — top-level shape: { "jobs": [...], "updated_at": "..." }
+  let parsed;
+  try {
+    const raw = readFileSafe(cronPath);
+    parsed = JSON.parse(raw || '');
+  } catch (e) {
+    checks.push(fail('cron-exists', `Failed to parse ${cronPath}: ${e.message}`));
+    checks.push(fail('cron-schedule-and-tz', 'jobs.json did not parse', { dependent_on: 'cron-exists' }));
+    checks.push(fail('cron-enabled-and-bound', 'jobs.json did not parse', { dependent_on: 'cron-exists' }));
+    checks.push(manual(
+      'cron-fires-end-to-end',
+      'Schedule a one-shot cron for two minutes from now, wait, and confirm you receive the message in your chosen channel. The deterministic checks above only verify the job is configured to fire; this confirms the executor + channel + delivery actually round-trip.'
+    ));
+    emitResult(6, checks, checkIntegrity());
+    return;
+  }
+
+  // Adapt shape: Hermes always writes { "jobs": [...] } — but handle bare array defensively
+  const jobs = Array.isArray(parsed) ? parsed : (parsed.jobs || []);
+  const userJobs = jobs.filter(j => {
+    const name = j.name || j.id || j.label || '';
+    return !M6_SYSTEM_DEFAULT_JOBS.includes(name);
+  });
+
+  if (userJobs.length === 0) {
+    checks.push(fail(
+      'cron-exists',
+      'jobs.json present but no user-created cron jobs found. Schedule a job in Hermes chat and re-run.',
+      { total_jobs: jobs.length, system_defaults: M6_SYSTEM_DEFAULT_JOBS.length }
+    ));
+    checks.push(fail('cron-schedule-and-tz', 'No user cron to check', { dependent_on: 'cron-exists' }));
+    checks.push(fail('cron-enabled-and-bound', 'No user cron to check', { dependent_on: 'cron-exists' }));
+    checks.push(manual(
+      'cron-fires-end-to-end',
+      'Schedule a one-shot cron for two minutes from now, wait, and confirm you receive the message in your chosen channel. The deterministic checks above only verify the job is configured to fire; this confirms the executor + channel + delivery actually round-trip.'
+    ));
+    emitResult(6, checks, checkIntegrity());
+    return;
+  }
+
+  // Use the first user-created cron for the schedule/binding checks
+  const job = userJobs[0];
+  checks.push(pass(
+    'cron-exists',
+    `${userJobs.length} user-created cron job(s) found`,
+    { count: userJobs.length, first_id: job.id || job.name || '<unknown>' }
+  ));
+
+  // ── cron-schedule-and-tz ─────────────────────────────────────────────────
+  // Schema note: Hermes does NOT store a per-job timezone in jobs.json.
+  // The system timezone (from hermes_time.now()) is used at execution time.
+  // Instead of checking for a "tz" field (which doesn't exist), we:
+  //   1. Confirm a schedule sub-object exists with a recognized kind
+  //   2. Confirm a system timezone is configured (config.yaml timezone key, or
+  //      presence of TZ env fallback at system level)
+  // This is the honest interpretation of "schedule + timezone" for Hermes's
+  // actual storage model. A future Hermes version may add per-job timezone.
+  const sched = job.schedule || {};
+  const schedKind = sched.kind; // "once" | "interval" | "cron"
+
+  // Extract the human-readable schedule expression based on kind
+  let schedExpr = null;
+  if (schedKind === 'cron') {
+    schedExpr = sched.expr || null;
+  } else if (schedKind === 'interval') {
+    schedExpr = sched.minutes ? `every ${sched.minutes}m` : null;
+  } else if (schedKind === 'once') {
+    schedExpr = sched.run_at ? 'once' : null; // don't include run_at timestamp (PII-adjacent: reveals user timezone)
+  }
+
+  const hasSchedule = !!schedKind && !!schedExpr;
+
+  // System timezone: check config.yaml for an explicit timezone setting
+  const configTz = readYamlValue('~/.hermes/config.yaml', 'timezone');
+  // Hermes falls back to system TZ when config.timezone is absent — check for
+  // TZ environment variable or assume system timezone is always "present"
+  // (every machine has one). We treat system timezone as always available since
+  // Hermes's hermes_time module always has a timezone to use.
+  const hasTimezone = true; // system timezone is always present; configTz is informational
+
+  if (hasSchedule) {
+    checks.push(pass(
+      'cron-schedule-and-tz',
+      `Schedule present (kind: ${schedKind}) and system timezone available${configTz ? ' (config.yaml timezone set)' : ' (system timezone, no config override)'}`,
+      {
+        schedule_kind: schedKind,
+        has_schedule: true,
+        has_system_tz: true,
+        config_tz_set: !!configTz,
+        // NOTE: cron expr, run_at, and timezone value are intentionally excluded (PII/sensitivity)
+      }
+    ));
+  } else {
+    checks.push(fail(
+      'cron-schedule-and-tz',
+      `Job has no recognizable schedule. schedule.kind = ${schedKind || '<missing>'}. ` +
+      'This is unexpected — re-create the job via Hermes chat.',
+      { schedule_kind: schedKind || null, has_schedule: false }
+    ));
+  }
+
+  // ── cron-enabled-and-bound ───────────────────────────────────────────────
+  // Schema: job.enabled (bool, default true), job.next_run_at (ISO|null),
+  // job.deliver (string: "origin"|"local"|"telegram:..."|"discord:..."|etc.)
+  // A job is "bound to a delivery channel" if deliver is non-empty and not "local"
+  // (local = save only, no external delivery). "origin" = deliver back to the
+  // chat that scheduled it — which IS a delivery channel (it must have had one).
+  const enabled = job.enabled !== false; // default true if field absent
+  const nextRun = job.next_run_at || null;
+  const deliver = job.deliver || null;
+
+  // "local" = no external delivery — treat as unbound for this check
+  // "origin" = deliver back to origin chat = bound (requires a real channel)
+  // anything else = explicit platform target = bound
+  const channelBound = deliver && deliver !== 'local';
+
+  if (enabled && nextRun && channelBound) {
+    checks.push(pass(
+      'cron-enabled-and-bound',
+      'Cron is enabled, has a next-run timestamp, and bound to a delivery channel',
+      {
+        enabled: true,
+        has_next_run: true,
+        channel_present: true,
+        deliver_type: deliver === 'origin' ? 'origin' : 'explicit',
+        // NOTE: literal deliver value (chat ID) intentionally excluded (PII)
+      }
+    ));
+  } else {
+    const reasons = [];
+    if (!enabled) reasons.push('cron is paused/disabled');
+    if (!nextRun) reasons.push('next_run_at is null (job may have completed or errored)');
+    if (!channelBound) reasons.push(
+      deliver === 'local'
+        ? 'deliver is "local" (save-only, no channel delivery) — update deliver to "origin" or a platform target'
+        : 'deliver field missing — re-create the job with a delivery channel'
+    );
+    checks.push(fail(
+      'cron-enabled-and-bound',
+      reasons.join('; '),
+      {
+        enabled,
+        has_next_run: !!nextRun,
+        channel_present: !!channelBound,
+        deliver_type: deliver === 'local' ? 'local' : (deliver ? 'present' : 'missing'),
+      }
+    ));
+  }
+
+  // ── Manual ───────────────────────────────────────────────────────────────
+  checks.push(manual(
+    'cron-fires-end-to-end',
+    'Schedule a one-shot cron for two minutes from now, wait, and confirm you receive the message in your chosen channel. The deterministic checks above only verify the job is configured to fire; this confirms the executor + channel + delivery actually round-trip.'
+  ));
+
+  emitResult(6, checks, checkIntegrity());
+}
+
+MODULE_RUNNERS[6] = runModule6;
+
 async function runAll() {
   const integrity = checkIntegrity();
   console.log('INTEGRITY:', JSON.stringify(integrity));
