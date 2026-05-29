@@ -53,6 +53,7 @@ function runCmd(cmd, args, opts = {}) {
       encoding: 'utf8',
       timeout: opts.timeoutMs ?? 30_000,
       stdio: ['ignore', 'pipe', 'pipe'],
+      env: opts.env ?? process.env,
     });
     return { stdout: stdout.trim(), stderr: '', status: 0 };
   } catch (e) {
@@ -280,7 +281,8 @@ async function runModule1() {
   try {
     const r = runCmd('hermes', ['--version']);
     if (r.status === 0 && r.stdout.trim()) {
-      checks.push(pass('hermes-installed', { version: r.stdout.trim().split('\n')[0] }));
+      const version = r.stdout.trim().split('\n')[0];
+      checks.push(pass('hermes-installed', version, { version }));
     } else {
       checks.push(fail('hermes-installed', '`hermes --version` exited non-zero or empty'));
     }
@@ -288,23 +290,46 @@ async function runModule1() {
     checks.push(fail('hermes-installed', '`hermes --version` failed: ' + e.message));
   }
 
-  // Check 2: gateway-running
-  // Phase 0 probe (2026-05-23) found no Hermes gateway process listening on
-  // any port. Port 1919 (spec assumption) did not respond. Config has a
-  // `dashboard:` section but no port key — only `server_actions: ''`.
-  // The check detects the live state honestly: PASS if any HTTP response is
-  // received, FAIL if the port is not reachable.
-  const dashboardPort = 1919;
-  const url = `http://127.0.0.1:${dashboardPort}`;
-  try {
-    const res = await httpProbe(url);
-    if (res && res.status > 0 && res.status < 500) {
-      checks.push(pass('gateway-running', { url, status: res.status }));
-    } else {
-      checks.push(fail('gateway-running', `Dashboard not reachable at ${url}`, { res }));
-    }
-  } catch (err) {
-    checks.push(fail('gateway-running', `Dashboard probe failed: ${err.message}`));
+  // Check 2: skill-registered
+  // Replaces the old `gateway-running` check. There is no Hermes web dashboard
+  // on :1919 — that was an OpenClaw assumption. In Hermes, `hermes gateway`
+  // connects messaging channels (Telegram/Discord/…), and skills run inside a
+  // `hermes` / `hermes --tui` session, not behind a gateway. The real
+  // prerequisite for running this validator is that Hermes *recognizes* the
+  // installed skill, which `hermes skills list` enumerates. This is a stronger
+  // signal than the on-disk SKILL.md check below (it proves Hermes loaded it,
+  // not just that the file exists).
+  const SKILL_REGISTERED_FIX =
+    'Confirm the skill is symlinked at `~/.hermes/skills/hermes-mastery-validator` ' +
+    '(`ln -sfn ~/hermes-mastery-validator ~/.hermes/skills/hermes-mastery-validator`), ' +
+    'then start a fresh Hermes session and re-run `hermes skills list`.';
+  // Force a wide terminal: `hermes skills list` renders a Rich table that
+  // truncates the Name column to the terminal width (~80 when piped), turning
+  // "hermes-mastery-validator" into "hermes-mastery-validat…". A wide COLUMNS
+  // stops the truncation so the full name is matchable.
+  const skillsList = runCmd('hermes', ['skills', 'list'], {
+    env: { ...process.env, COLUMNS: '400' },
+  });
+  if (skillsList.status === 0 && /hermes-mastery-validator/.test(skillsList.stdout)) {
+    checks.push(pass(
+      'skill-registered',
+      'hermes-mastery-validator appears in `hermes skills list`',
+      { source: 'hermes skills list' }
+    ));
+  } else if (skillsList.status !== 0) {
+    checks.push(fail(
+      'skill-registered',
+      '`hermes skills list` exited non-zero — is Hermes installed and on PATH?',
+      { status: skillsList.status, stderr: skillsList.stderr.slice(0, 200) },
+      SKILL_REGISTERED_FIX
+    ));
+  } else {
+    checks.push(fail(
+      'skill-registered',
+      'hermes-mastery-validator not found in `hermes skills list`',
+      null,
+      SKILL_REGISTERED_FIX
+    ));
   }
 
   // Check 3: model-configured (via readYamlValue per spec §7.1 v4)
@@ -313,22 +338,24 @@ async function runModule1() {
   // only supported read method.
   const provider = readYamlValue('~/.hermes/config.yaml', 'model.provider');
   if (provider && typeof provider === 'string' && provider.length > 0) {
-    checks.push(pass('model-configured', { key: 'model.provider', provider }));
+    checks.push(pass('model-configured', `model.provider: ${provider}`, { key: 'model.provider', provider }));
   } else {
     checks.push(fail('model-configured', 'Config key model.provider is missing or empty in ~/.hermes/config.yaml'));
   }
 
   // Check 4: validator-skill-installed (canonical slug per spec §4)
-  // Phase 0 probe confirmed install target: ~/.hermes/skills/hermes-mastery-validator/
-  // Dev workflow: ln -sfn $(pwd) ~/.hermes/skills/hermes-mastery-validator
-  // Learner workflow: hermes skills install s1dd4rth/hermes-mastery-validator
+  // Install target: ~/.hermes/skills/hermes-mastery-validator/ (symlink).
+  // Hub install (`hermes skills install s1dd4rth/...`) is NOT available — the
+  // skill isn't in any registry Hermes can fetch (confirmed v0.15.1: "Could not
+  // fetch from any source"), and the validator needs its whole repo (bin/,
+  // checks/, node_modules), not a single SKILL.md. Clone + symlink is canonical.
   const skillPath = expandHome('~/.hermes/skills/hermes-mastery-validator/SKILL.md');
   if (fileExists(skillPath)) {
-    checks.push(pass('validator-skill-installed', { path: skillPath }));
+    checks.push(pass('validator-skill-installed', 'SKILL.md present at ' + skillPath, { path: skillPath }));
   } else {
     checks.push(fail(
       'validator-skill-installed',
-      `Validator skill not installed at ${skillPath}. For dev: symlink via \`ln -sfn $(pwd) ~/.hermes/skills/hermes-mastery-validator\`. For learners: \`hermes skills install s1dd4rth/hermes-mastery-validator\`.`,
+      `Validator skill not installed at ${skillPath}. Clone + symlink: \`cd ~ && git clone https://github.com/s1dd4rth/hermes-mastery-validator.git && ln -sfn ~/hermes-mastery-validator ~/.hermes/skills/hermes-mastery-validator && cd ~/hermes-mastery-validator && npm install\`.`,
       { expected_path: skillPath }
     ));
   }

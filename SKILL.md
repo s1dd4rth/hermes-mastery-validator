@@ -1,7 +1,7 @@
 ---
 name: hermes-mastery-validator
 description: Validator skill for the Hermes Mastery course. Runs `verify.js N` and replies with one JSON object per module.
-version: 0.1.0-alpha.0
+version: 0.1.0-alpha.2
 ---
 
 # Hermes Mastery — Course Validator
@@ -74,7 +74,6 @@ Recipes assume a Unix-y shell environment. Make sure these are on the host runni
 | Tool | Used for | Install if missing |
 |---|---|---|
 | `bash` | shell for running recipe commands | comes with macOS, Linux; on Windows use WSL2 |
-| `curl` | gateway HTTP probes (M1) | preinstalled on macOS, Linux, WSL2 |
 | `git` | n/a — only for installing this skill itself | preinstalled on macOS, Linux, WSL2 |
 | `grep`, `sed`, `stat` | identity-file inspection (M1, M2, M5–M9) | preinstalled on macOS, Linux, WSL2; macOS uses BSD `stat` (recipes branch on `uname -s`) |
 | `jq` | parsing structured CLI output (M3, M4, M5, M6, M9) | `brew install jq` (macOS) / `apt install jq` (Debian/Ubuntu) / `dnf install jq` (Fedora) |
@@ -187,7 +186,7 @@ Set the response's top-level `platform` field accordingly.
 
 | N | File | Deterministic | Manual | Notes |
 |---|---|---|---|---|
-| 1 | `checks/m1.md` | 4 | 0 | Install and Configure. hermes-installed, gateway-running, model-configured, validator-skill-installed. |
+| 1 | `checks/m1.md` | 4 | 0 | Install and Configure. hermes-installed, skill-registered, model-configured, validator-skill-installed. |
 | 2–10 | TBD (Phase 2/3) | — | — | Populated in later build phases. |
 
 Calling `verify_module(N)` for any N outside 1..10 returns `{checks: [], detail: "module N out of range"}` with `module` set and an empty checks array.
