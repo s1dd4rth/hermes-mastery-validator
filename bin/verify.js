@@ -1589,7 +1589,7 @@ function encodeBase32(buf) {
 async function runModule10() {
   const checks = [];
 
-  // ── claw-reviewed-setup: run M1-M9 as subprocesses ────────────────────
+  // ── hermes-reviewed-setup: run M1-M9 as subprocesses ────────────────────
   // Each module is invoked fresh (no shared state) with a generous timeout.
   // The loop is intentionally 1..9 only — bonus modules are EXCLUDED from
   // the completion code per spec §6 M10 (bonus-exclusion principle).
@@ -1611,13 +1611,13 @@ async function runModule10() {
   const errors = reports.filter(r => r.error);
   if (errors.length === 0) {
     checks.push(pass(
-      'claw-reviewed-setup',
+      'hermes-reviewed-setup',
       'All 9 prior-module verifications executed without error',
       { modules_run: 9 }
     ));
   } else {
     checks.push(fail(
-      'claw-reviewed-setup',
+      'hermes-reviewed-setup',
       `Modules failed to execute: ${errors.map(e => 'M' + e.module).join(', ')}`,
       { failed_modules: errors.map(e => e.module) }
     ));
