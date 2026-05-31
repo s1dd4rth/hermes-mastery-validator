@@ -1491,9 +1491,10 @@ MODULE_RUNNERS[8] = runModule8;
 // we FAIL writer-soul-distinct-files and tell the learner to edit the file.
 //
 // Acknowledged gap (spec §10 item 14): cross-profile delegation (root Hermes
-// invoking the writer profile and receiving back a draft) is unknown in
-// Hermes v0.12.0. M9 treats profiles as isolated; if delegation surfaces in
-// a later Hermes version, M9 will grow a cross-profile-comms manual.
+// invoking the writer profile by name and receiving back a draft) has no CLI
+// surface (confirmed v0.15.1). A delegate tool exists for spawning subagents,
+// but that is not cross-PROFILE RPC. M9 treats profiles as isolated; if
+// profile delegation surfaces later, M9 will grow a cross-profile-comms manual.
 function runModule9() {
   const checks = [];
   const profilesDir = expandHome('~/.hermes/profiles');
@@ -1690,12 +1691,12 @@ async function runModule10() {
   ));
 
   // ── session-search-returns-results ────────────────────────────────────
-  // Phase 0 probe (2026-05-28): `hermes search` is NOT a valid subcommand in
-  // v0.12.0 — the CLI rejects it with "invalid choice: 'search'".
-  // Honest downgrade to manual per spec §6 M10 Phase 0 strategy.
+  // `hermes search` is NOT a valid subcommand (confirmed v0.15.1: "invalid
+  // choice: 'search'"). Session search is exposed as an agent tool, not a CLI —
+  // so the learner asks the agent in chat to search past sessions.
   checks.push(manual(
     'session-search-returns-results',
-    'Open the Hermes dashboard (run `hermes dashboard` or navigate to http://localhost:1919). Use the search bar to look up a phrase you used in an earlier module — e.g., a name or topic from M2 or M3. Confirm it returns at least one result. (The `hermes search` CLI surface does not exist in v0.12.0; dashboard search is the only surface available.)'
+    'Ask your Hermes in chat to search your past sessions — e.g. "Search our past conversations for what I told you about myself in M2." Confirm it surfaces a fact from an earlier module. (There is no `hermes search` CLI; session search is a built-in agent tool. You can also browse past sessions in `hermes dashboard`.)'
   ));
 
   // ── curator-has-activity ──────────────────────────────────────────────
