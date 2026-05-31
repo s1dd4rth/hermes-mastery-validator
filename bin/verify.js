@@ -334,7 +334,7 @@ async function runModule1() {
 
   // Check 3: model-configured (via readYamlValue per spec §7.1 v4)
   // Phase 0 probe confirmed model.provider = "gemini" in ~/.hermes/config.yaml.
-  // `hermes config get` does not exist in v0.12.0; js-yaml direct parse is the
+  // `hermes config get` does not exist (only `show`/`set`); js-yaml direct parse is the
   // only supported read method.
   const provider = readYamlValue('~/.hermes/config.yaml', 'model.provider');
   if (provider && typeof provider === 'string' && provider.length > 0) {
@@ -1587,7 +1587,7 @@ function runModule9() {
   ));
   checks.push(manual(
     'profile-delegation',
-    'Open your writer profile (`writer chat` or `hermes profile use writer`) and ask for a 500-word draft on the same topic you\'d ask your root Hermes. Compare both drafts; confirm the writer\'s draft has a distinct voice (not just identical output from a renamed clone). (Note: `hermes -p writer` is not a valid flag in v0.12.0 — use the alias-wrapper invocation.)'
+    'Open your writer profile (`writer chat` or `hermes profile use writer`) and ask for a 500-word draft on the same topic you\'d ask your root Hermes. Compare both drafts; confirm the writer\'s draft has a distinct voice (not just identical output from a renamed clone). (Note: `hermes -p writer` is not a valid flag — use the alias-wrapper invocation `writer chat`, or `hermes profile use writer`.)'
   ));
 
   emitResult(9, checks, checkIntegrity());
@@ -1737,7 +1737,7 @@ async function runModule10() {
   ));
   checks.push(manual(
     'loop-honesty-check',
-    'Open the Hermes dashboard. Can you point at evidence of the self-improving loop: a Curator run timestamp, a session search returning a fact the agent learned about you, a Honcho user-model entry? If you cannot, M10 has *named* the loop but not *shown* it — that\'s a course bug, please report.'
+    'Point at concrete evidence of the self-improving loop: a Curator run timestamp (`ls ~/.hermes/logs/curator/`), the agent surfacing a fact about you when you ask it to search past sessions, or a memory entry (`hermes memory list`). If you cannot find any, M10 has *named* the loop but not *shown* it — that\'s a course bug, please report.'
   ));
 
   emitResult(10, checks, checkIntegrity());

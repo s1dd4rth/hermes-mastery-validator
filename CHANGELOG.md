@@ -2,6 +2,27 @@
 
 All notable changes to the `hermes-mastery-validator` skill.
 
+## [0.1.0-alpha.3] — 2026-05-31
+
+### Changed
+- **M10 `session-search-returns-results` manual** rewritten: `hermes search` is
+  not a CLI (confirmed v0.15.1) and session search is an agent tool — the manual
+  now tells the learner to ask the agent in chat (or browse `hermes dashboard`),
+  not to use a dashboard search bar at `:1919`.
+- **M10 `loop-honesty-check`** points at real evidence sources (`ls
+  ~/.hermes/logs/curator/`, ask-the-agent session search, `hermes memory list`)
+  instead of a dashboard search UI.
+- **M9 `profile-delegation`** note: dropped the `v0.12.0` pin; clarified a
+  delegate tool exists for subagents but there's no cross-*profile* RPC CLI.
+- Dropped stale `v0.12.0` version pins from comments/docs (config-get note,
+  m10.md). Verified against live Hermes v0.15.1.
+
+### Tag
+
+[`v0.1.0-alpha.3`](https://github.com/s1dd4rth/hermes-mastery-validator/releases/tag/v0.1.0-alpha.3).
+
+---
+
 ## [0.1.0-alpha.2] — 2026-05-29
 
 ### Changed

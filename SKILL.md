@@ -1,7 +1,7 @@
 ---
 name: hermes-mastery-validator
 description: Validator skill for the Hermes Mastery course. Runs `verify.js N` and replies with one JSON object per module.
-version: 0.1.0-alpha.2
+version: 0.1.0-alpha.3
 ---
 
 # Hermes Mastery — Course Validator
